@@ -1,11 +1,10 @@
 name: Build Streamix BD APK
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -18,28 +17,50 @@ jobs:
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Unzip Project Files
+      - name: Install Android SDK
         run: |
-          if [ -f "streamix-bd (6).zip" ]; then
-            unzip -o "streamix-bd (6).zip" -d .
-          elif [ -f *.zip ]; then
-            unzip -o *.zip -d .
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Find Project
+        run: |
+          echo "Repository files:"
+          find . -maxdepth 3 -type f | head -100
+
+          if [ -f "./gradlew" ]; then
+            echo "Project found in root"
+            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
+          elif [ -f "./streamix-bd/gradlew" ]; then
+            echo "Project found in streamix-bd"
+            echo "PROJECT_DIR=./streamix-bd" >> "$GITHUB_ENV"
+          else
+            echo "ERROR: gradlew not found"
+            exit 1
           fi
 
       - name: Make Gradle Wrapper Executable
-        run: chmod +x gradlew || true
+        run: |
+          cd "$PROJECT_DIR"
+          chmod +x gradlew
+          ls -la gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          cd "$PROJECT_DIR"
+          ./gradlew clean assembleDebug --no-daemon
+
+      - name: Find APK
+        run: |
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Streamix-BD-debug
+          path: |
+            **/build/outputs/apk/debug/*.apk
