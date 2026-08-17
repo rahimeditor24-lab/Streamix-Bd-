@@ -23,89 +23,141 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
           yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Find ZIP
-        id: zip
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Extract ZIP if present
+        shell: bash
         run: |
-          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+          set -e
 
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: No ZIP file found"
-            exit 1
-          fi
-
-          echo "Found ZIP: $ZIP"
-          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
-
-      - name: Extract Project
-        run: |
           mkdir -p extracted
-          unzip -q "${{ steps.zip.outputs.zip }}" -d extracted
 
-          echo "Extracted files:"
-          find extracted -maxdepth 4 -type f | head -100
+          ZIP_FILE=$(find . -type f -iname "*.zip" \
+            -not -path "./.git/*" | head -n 1 || true)
 
-      - name: Find Gradle Project
-        id: project
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP found: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d extracted
+          else
+            echo "No ZIP found."
+            echo "Using repository files directly."
+          fi
+
+      - name: Find Android Project
+        shell: bash
         run: |
-          PROJECT=$(find extracted -type f -name "gradlew" -print -quit)
+          set -e
 
-          if [ -z "$PROJECT" ]; then
-            echo "ERROR: gradlew not found!"
-            echo "Searching for Gradle files..."
-            find extracted -type f \( -name "settings.gradle*" -o -name "build.gradle*" -o -name "gradle-wrapper.jar" \)
+          PROJECT_DIR=""
+
+          # First check repository root
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            PROJECT_DIR="."
+          fi
+
+          # If not found, search extracted files
+          if [ -z "$PROJECT_DIR" ]; then
+            SETTINGS_FILE=$(find extracted . \
+              -type f \
+              \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+              -not -path "*/.git/*" \
+              -not -path "*/build/*" \
+              | head -n 1 || true)
+
+            if [ -n "$SETTINGS_FILE" ]; then
+              PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+            fi
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project not found."
+            echo ""
+            echo "Repository contents:"
+            find . -maxdepth 3 -type f | sort | head -200
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT")
+          PROJECT_DIR=$(realpath "$PROJECT_DIR")
 
-          echo "Gradle project found:"
+          echo "Android project found:"
           echo "$PROJECT_DIR"
 
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Make Gradle Wrapper Executable
+      - name: Check Android Project
         run: |
-          chmod +x "${{ steps.project.outputs.project_dir }}/gradlew"
+          cd "$PROJECT_DIR"
 
-      - name: Check Gradle Project
-        run: |
-          cd "${{ steps.project.outputs.project_dir }}"
           echo "Project directory:"
           pwd
+
           echo ""
           echo "Project files:"
           ls -la
-          echo ""
-          echo "Gradle version:"
-          ./gradlew --version
 
-      - name: Build Debug APK
-        run: |
-          cd "${{ steps.project.outputs.project_dir }}"
-          ./gradlew clean assembleDebug --no-daemon --stacktrace
-
-      - name: Find APK
-        id: apk
-        run: |
-          APK=$(find "${{ steps.project.outputs.project_dir }}" -type f -name "*.apk" | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK not found!"
+          if [ ! -d "app" ]; then
+            echo "ERROR: app folder not found."
             exit 1
           fi
 
-          echo "APK found:"
-          echo "$APK"
+      - name: Prepare Gradle Wrapper
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
 
-          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          if [ -f "./gradlew" ]; then
+            echo "Gradle wrapper found."
+            chmod +x ./gradlew
+          else
+            echo "Gradle wrapper not found."
+            echo "Generating wrapper with Gradle 9.3.1..."
+            gradle wrapper --gradle-version 9.3.1
+            chmod +x ./gradlew
+          fi
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          echo "Gradle version:"
+          ./gradlew --version
+
+          echo ""
+          echo "Cleaning project..."
+          ./gradlew clean --no-daemon
+
+          echo ""
+          echo "Building Debug APK..."
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Find APK
+        shell: bash
+        run: |
+          echo "Searching for APK..."
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Streamix-BD-APK
-          path: ${{ steps.apk.outputs.apk }}
+          name: Streamix-BD-Debug-APK
+          path: |
+            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
